@@ -1,0 +1,162 @@
+---
+title: "Eyetracking_lecture3"
+author: "Sofia F. M. Schmidt-Kallesøe"
+date: "6/2/2018"
+output: html_document
+---
+
+```{r}
+
+setwd("~/Documents/Aarhus/4. Semester/Eye tracking/Data")
+
+library(data.table)
+library(readr)
+library(dplyr)
+library(caret)
+library(Metrics)
+library(lme4)
+library(lmerTest)
+library(modelr)
+
+```
+
+
+
+```{r}
+
+#Loading data and binding data
+fixations1 = fread("FixationsV1.csv")
+saccades1 = fread("SaccadesV1.csv")
+samples1 = fread("SamplesV1.csv")
+log1 = fread("logfile_1_2_f.csv")
+log2 = fread("logfile_2_1_f.csv")
+log3 = fread("logfile_3_2_f.csv")
+log4 = fread("logfile_4_1_F.csv")
+log5 = fread("logfile_5_2_m.csv")
+log6 = fread("logfile_6_1_m.csv")
+logs = rbind(log1, log2, log3, log4, log5, log6)
+
+#Making V1 numeric so it starts counting from 1
+logs$V1 = as.factor(logs$V1)
+logs$V1 = as.numeric(logs$V1)
+
+#Renaming V1 to trials
+logs = rename(logs, "Trial" = "V1")
+logs = rename(logs, "ParticipantID" = "subject")
+
+#Adding variables: gender, ostensiveness, direction
+logs$actorgender = substr(logs$video, start = 1, stop = 1)
+logs$direction = substr(logs$video, start = 9, stop = 11)
+logs$ostensiveness = substr(logs$video, start = 13, stop = 14)
+
+#Merging logfiles with files of fixations, saccades and samples
+mergedfix = merge(fixations1, logs, by = c("ParticipantID", "Trial"), all = T)
+mergedsac = merge(saccades1, logs, by = c("ParticipantID", "Trial"), all = T)
+mergedsam = merge(samples1, logs, by = c("ParticipantID", "Trial"), all = T)
+
+#Making condition columns and assigning conditions to search task (search order 1 = 1-5 star search, 6-10 counting & search order 2 = 1-5 counting, 6-10 star search)
+mergedfix$condition = NA
+mergedsac$condition = NA
+mergedsam$condition = NA
+
+mergedfix$condition[which(mergedfix$SearchOrder == "1" & mergedfix$Trial < 6)] = "Star"
+mergedfix$condition[which(mergedfix$SearchOrder == "1" & mergedfix$Trial > 5)] = "Count"
+mergedfix$condition[which(mergedfix$SearchOrder == "2" & mergedfix$Trial < 6)] = "Count"
+mergedfix$condition[which(mergedfix$SearchOrder == "2" & mergedfix$Trial > 5)] = "Star"
+
+mergedsac$condition[which(mergedsac$SearchOrder == "1" & mergedsac$Trial < 6)] = "Star"
+mergedsac$condition[which(mergedsac$SearchOrder == "1" & mergedsac$Trial > 5)] = "Count"
+mergedsac$condition[which(mergedsac$SearchOrder == "2" & mergedsac$Trial < 6)] = "Count"
+mergedsac$condition[which(mergedsac$SearchOrder == "2" & mergedsac$Trial > 5)] = "Star"
+
+mergedsam$condition[which(mergedsam$SearchOrder == "1" & mergedsam$Trial < 6)] = "Star"
+mergedsam$condition[which(mergedsam$SearchOrder == "1" & mergedsam$Trial > 5)] = "Count"
+mergedsam$condition[which(mergedsam$SearchOrder == "2" & mergedsam$Trial < 6)] = "Count"
+mergedsam$condition[which(mergedsam$SearchOrder == "2" & mergedsam$Trial > 5)] = "Star"
+
+```
+
+Complicated model for predicting fixation duration
+FDuration (duration of fixations) ~ SearchType*SearchOrder*Fixations*Trial+(1+SearchType*Fixations*Trial|ParticipantID)
+
+There are two search orders (star first - count second, count first - star second), however, the order of pictures in each search order is the same. Therefore we don't expect any systematic change for search type (star or count), however, with type for each search type there may be a systematic change (e.g. longer fixations with each search type because of boredom). Therefore, we make an interaction between searchtype and trial. However, within each trial there also may be a systematic change (e.g. longer fixations with each trial because of boredom), therefore, we make an interaction between trial and fixations. 
+
+More simple model
+FDuration ~ SearchType*Trial+(1+SearchType*Trial|ParticipantID)
+
+
+```{r}
+
+#Subsetting data to only include visual search task data
+visualsearchdata = subset(mergedfix, Task == "VisualSearch")
+
+#Participant as character first to make the system "forget" that there used to be 12 factors (across all tasks), then as factor and creating folds_id variable to give participants numbers instead of strings -
+visualsearchdata$ParticipantID = as.character(visualsearchdata$ParticipantID)
+visualsearchdata$ParticipantID = as.factor(visualsearchdata$ParticipantID)
+visualsearchdata$folds_id = as.numeric(visualsearchdata$ParticipantID)
+
+#Cross-validation
+folds = createFolds(unique(visualsearchdata$ParticipantID), k = 3)
+
+test_rmse = NULL
+train_rmse = NULL
+n = 1
+
+#Creating loop
+for(i in folds){
+  #subsetting testdata
+  testsubset = subset(visualsearchdata, folds_id %in% i)
+  
+  #subsetting traindata
+  trainsubset = subset(visualsearchdata,!(folds_id %in% i))
+  
+  #training the model on the traindata subset
+  trainmodel = lmer(Duration ~ 1 + condition + Trial + (1 + condition + Trial | ParticipantID), REML = FALSE, trainsubset)
+  
+  #predcting values for the dependent variable from the testdata using the training model
+  pred = predict(trainmodel, testsubset, allow.new.levels = T)
+  #Finding root mean squared error of the difference between the measured child MLU in the test data and the predicted child MLU
+  test_rmse[n] = Metrics::rmse(testsubset$Duration, pred)
+  #Finding root mean squared error of the difference between the measured child MLU in the train data and the fitted MLU values of the training model 
+  train_rmse[n] = Metrics::rmse(trainsubset$Duration, fitted(trainmodel))
+  
+  n=n+1
+}
+
+mean(test_rmse)
+mean(train_rmse)
+  
+
+```
+
+#Social engagement task
+
+Pupulsize ~ OST + DIR 
+
+Should we look at pupil size during fixations or saccades?
+  No processing during saccades - used be investigated during fixations
+Should we look at fixation dataset (pupil size averaged over individual fixations) or sample dataset (pupil size per ms)?
+  If we look at samples, we have a more finegrained grasp 
+  
+Pupilsize ~ OST*DIR + ACTGender*PARTGender + Trial + TrialTime + (1+TrialTime+OST+DIR|ParticipantID)
+  Interaction between gender of actor and participant because the pupil size of the participant may depend on the gender of the actor depending on their gender themselves
+  Ostensiveness and direction may influence each other - 
+
+
+Pupilsize ~ DIR*OST*(TT+TT^2+TT^3)+ACTGEnder*PARTGEnder*(TT+TT^2+TT^3) + Trial
+Interaction between gender and change the growth curve over time 
+Taking into account that it might not be linear - including quadratic and cubic 
+
+
+
+```{r}
+
+
+
+
+```
+
+
+
+
+
